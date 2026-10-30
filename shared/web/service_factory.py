@@ -30,6 +30,25 @@ from shared.logging.setup import (
 )
 
 
+async def _run_callback(
+    callback: (
+        Callable
+        | None
+    ),
+):
+    if callback is None:
+        return None
+
+    result = callback()
+
+    if inspect.isawaitable(
+        result
+    ):
+        return await result
+
+    return result
+
+
 def create_service_app(
     *,
     service_name: str,
@@ -37,6 +56,14 @@ def create_service_app(
     description: str,
     version: str = "0.1.0",
     readiness_check: (
+        Callable
+        | None
+    ) = None,
+    startup_handler: (
+        Callable
+        | None
+    ) = None,
+    shutdown_handler: (
         Callable
         | None
     ) = None,
@@ -50,7 +77,7 @@ def create_service_app(
     - Swagger/OpenAPI;
     - /health;
     - /ready;
-    - lifespan startup/shutdown logging.
+    - lifespan handling.
     """
 
     configure_logging(
@@ -66,6 +93,18 @@ def create_service_app(
         app: FastAPI,
     ):
         logger.info(
+            "service_starting",
+            environment=(
+                settings.app_env
+            ),
+            version=version,
+        )
+
+        await _run_callback(
+            startup_handler
+        )
+
+        logger.info(
             "service_started",
             environment=(
                 settings.app_env
@@ -77,6 +116,14 @@ def create_service_app(
             yield
 
         finally:
+            logger.info(
+                "service_stopping"
+            )
+
+            await _run_callback(
+                shutdown_handler
+            )
+
             logger.info(
                 "service_stopped"
             )
@@ -112,12 +159,6 @@ def create_service_app(
         ),
     )
     async def health():
-        """
-        Kubernetes-style liveness endpoint.
-
-        It only confirms that the FastAPI
-        process itself is alive.
-        """
 
         return {
             "status": "healthy",
@@ -140,13 +181,6 @@ def create_service_app(
         ),
     )
     async def ready():
-        """
-        Kubernetes-style readiness endpoint.
-
-        Individual services can provide
-        additional infrastructure checks,
-        for example MSSQL or RabbitMQ.
-        """
 
         if readiness_check is None:
 
@@ -159,14 +193,12 @@ def create_service_app(
             }
 
         try:
-            result = (
-                readiness_check()
-            )
 
-            if inspect.isawaitable(
-                result
-            ):
-                result = await result
+            result = await (
+                _run_callback(
+                    readiness_check
+                )
+            )
 
             return {
                 "status": "ready",
