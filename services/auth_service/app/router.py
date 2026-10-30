@@ -1,4 +1,6 @@
-from typing import Annotated
+from typing import (
+    Annotated,
+)
 
 from fastapi import (
     APIRouter,
@@ -23,6 +25,10 @@ from sqlalchemy.orm import (
 
 from services.auth_service.app.database import (
     get_db,
+)
+
+from services.auth_service.app.messaging import (
+    publish_user_registered,
 )
 
 from services.auth_service.app.repository import (
@@ -94,7 +100,6 @@ def get_current_user(
         or credentials.scheme.lower()
         != "bearer"
     ):
-
         raise HTTPException(
             status_code=(
                 status
@@ -111,14 +116,12 @@ def get_current_user(
         )
 
     try:
-
         payload = decode_token(
             credentials.credentials,
             expected_type="access",
         )
 
     except TokenValidationError:
-
         raise HTTPException(
             status_code=(
                 status
@@ -149,7 +152,6 @@ def get_current_user(
         user is None
         or not user.is_active
     ):
-
         raise HTTPException(
             status_code=(
                 status
@@ -174,7 +176,7 @@ def get_current_user(
     ),
     summary="Register a new account",
 )
-def register(
+async def register(
     payload: RegisterRequest,
     request: Request,
     db: Annotated[
@@ -184,7 +186,6 @@ def register(
         ),
     ],
 ):
-
     repository = UserRepository(
         db
     )
@@ -198,7 +199,6 @@ def register(
     )
 
     if existing_user:
-
         raise HTTPException(
             status_code=(
                 status.HTTP_409_CONFLICT
@@ -216,7 +216,6 @@ def register(
     )
 
     try:
-
         user = repository.create(
             email=str(
                 payload.email
@@ -228,7 +227,6 @@ def register(
         )
 
     except IntegrityError:
-
         db.rollback()
 
         raise HTTPException(
@@ -246,6 +244,18 @@ def register(
         role=user.role,
     )
 
+    #
+    # Publish asynchronous integration event.
+    #
+
+    await publish_user_registered(
+        user=user,
+        correlation_id=(
+            request.state
+            .correlation_id
+        ),
+    )
+
     _logger().info(
         "user_registered",
         user_id=user.id,
@@ -253,6 +263,11 @@ def register(
         request_id=getattr(
             request.state,
             "request_id",
+            None,
+        ),
+        correlation_id=getattr(
+            request.state,
+            "correlation_id",
             None,
         ),
     )
@@ -272,7 +287,9 @@ def register(
     response_model=(
         AuthResponse
     ),
-    summary="Login with email and password",
+    summary=(
+        "Login with email and password"
+    ),
 )
 def login(
     payload: LoginRequest,
@@ -284,7 +301,6 @@ def login(
         ),
     ],
 ):
-
     repository = UserRepository(
         db
     )
@@ -296,7 +312,6 @@ def login(
     )
 
     if user is None:
-
         verify_dummy_password(
             payload.password
         )
@@ -315,7 +330,6 @@ def login(
         payload.password,
         user.password_hash,
     ):
-
         raise HTTPException(
             status_code=(
                 status
@@ -327,7 +341,6 @@ def login(
         )
 
     if not user.is_active:
-
         raise HTTPException(
             status_code=(
                 status.HTTP_403_FORBIDDEN
@@ -368,7 +381,9 @@ def login(
     response_model=(
         TokenPairResponse
     ),
-    summary="Refresh authentication tokens",
+    summary=(
+        "Refresh authentication tokens"
+    ),
 )
 def refresh(
     payload: RefreshRequest,
@@ -379,9 +394,7 @@ def refresh(
         ),
     ],
 ):
-
     try:
-
         token_payload = (
             decode_token(
                 payload.refresh_token,
@@ -392,7 +405,6 @@ def refresh(
         )
 
     except TokenValidationError:
-
         raise HTTPException(
             status_code=(
                 status
@@ -418,7 +430,6 @@ def refresh(
         user is None
         or not user.is_active
     ):
-
         raise HTTPException(
             status_code=(
                 status
@@ -445,14 +456,15 @@ def refresh(
     response_model=(
         UserResponse
     ),
-    summary="Get authenticated identity",
+    summary=(
+        "Get authenticated identity"
+    ),
 )
 def me(
     current_user=Depends(
         get_current_user
     ),
 ):
-
     return UserResponse.model_validate(
         current_user
     )
