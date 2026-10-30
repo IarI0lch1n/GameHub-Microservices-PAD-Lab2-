@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 Write-Host ""
 Write-Host "GameHub bootstrap started..." -ForegroundColor Cyan
@@ -388,9 +388,9 @@ Library Service and Notification Service process this event asynchronously.
 '@
 
 Set-Content -Path "docs\architecture.md" -Value $architecture -Encoding UTF8
-# ============================================================
-
-# ============================================================
+============================================================
+docs/events.md
+============================================================
 $events = @'
 GameHub Events
 GameHub uses RabbitMQ for asynchronous communication.
@@ -450,9 +450,9 @@ notification-service
 '@
 
 Set-Content -Path "docs\events.md" -Value $events -Encoding UTF8
-# ============================================================
-
-# ============================================================
+============================================================
+docs/api.md
+============================================================
 $api = @'
 GameHub API
 All public requests will eventually pass through the API Gateway.
@@ -501,23 +501,3 @@ FastAPI Swagger:
 
 OpenAPI:
 /openapi.json
-
-'@
-
-Set-Content -Path "docs\api.md" -Value $api -Encoding UTF8
-
-Write-Host ""
-Write-Host "GameHub bootstrap completed successfully." -ForegroundColor Green
-Write-Host ""
-
-Write-Host "Root files:" -ForegroundColor Cyan
-Get-ChildItem -File -Force
-
-Write-Host ""
-Write-Host "Documentation:" -ForegroundColor Cyan
-Get-ChildItem ".\docs" -File -Force
-
-Write-Host ""
-Write-Host "Git status:" -ForegroundColor Cyan
-git status --short
-
