@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from collections.abc import (
@@ -34,6 +35,40 @@ MessageHandler = Callable[
 ]
 
 
+DELIVERY_ATTEMPT_HEADER = (
+    "x-delivery-attempt"
+)
+
+
+def _get_delivery_attempt(
+    headers,
+) -> int:
+
+    if not headers:
+        return 1
+
+    raw_value = headers.get(
+        DELIVERY_ATTEMPT_HEADER,
+        1,
+    )
+
+    try:
+        value = int(
+            raw_value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return 1
+
+    return max(
+        value,
+        1,
+    )
+
+
 class RabbitMQClient:
 
     def __init__(
@@ -49,6 +84,8 @@ class RabbitMQClient:
         self.connection = None
         self.channel = None
         self.exchange = None
+
+        self.dead_letter_exchange = None
 
     def _logger(
         self,
@@ -127,10 +164,26 @@ class RabbitMQClient:
             )
         )
 
+        self.dead_letter_exchange = (
+            await self.channel
+            .declare_exchange(
+                (
+                    settings
+                    .rabbitmq_dead_letter_exchange
+                ),
+                ExchangeType.TOPIC,
+                durable=True,
+            )
+        )
+
         self._logger().info(
             "rabbitmq_connected",
             exchange=(
                 settings.rabbitmq_exchange
+            ),
+            dead_letter_exchange=(
+                settings
+                .rabbitmq_dead_letter_exchange
             ),
         )
 
@@ -139,6 +192,10 @@ class RabbitMQClient:
         *,
         routing_key: str,
         event: dict,
+        headers: (
+            dict
+            | None
+        ) = None,
     ) -> None:
 
         if (
@@ -204,59 +261,141 @@ class RabbitMQClient:
                 "utf-8"
             )
 
-            message = Message(
-                body=body,
-                content_type=(
-                    "application/json"
-                ),
-                delivery_mode=(
-                    DeliveryMode.PERSISTENT
-                ),
-                message_id=(
-                    traced_event.get(
-                        "event_id"
-                    )
-                ),
-                correlation_id=(
-                    traced_event.get(
-                        "correlation_id"
-                    )
-                ),
-                type=(
-                    traced_event.get(
-                        "event_type"
-                    )
-                ),
+            publish_headers = dict(
+                headers
+                or {}
             )
 
-            try:
+            last_error = None
 
-                await self.exchange.publish(
-                    message,
-                    routing_key=(
-                        routing_key
+            for attempt in range(
+                1,
+                (
+                    settings
+                    .rabbitmq_publish_max_attempts
+                    + 1
+                ),
+            ):
+
+                message = Message(
+                    body=body,
+                    content_type=(
+                        "application/json"
                     ),
-                    mandatory=True,
+                    delivery_mode=(
+                        DeliveryMode.PERSISTENT
+                    ),
+                    message_id=(
+                        traced_event.get(
+                            "event_id"
+                        )
+                    ),
+                    correlation_id=(
+                        traced_event.get(
+                            "correlation_id"
+                        )
+                    ),
+                    type=(
+                        traced_event.get(
+                            "event_type"
+                        )
+                    ),
+                    headers=(
+                        publish_headers
+                    ),
                 )
 
-            except Exception as exc:
+                try:
 
-                if trace_span is not None:
+                    await self.exchange.publish(
+                        message,
+                        routing_key=(
+                            routing_key
+                        ),
+                        mandatory=True,
+                    )
 
-                    trace_span.update(
-                        level="ERROR",
-                        status_message=str(
+                    if trace_span is not None:
+
+                        trace_span.update(
+                            output={
+                                "published": True,
+                                "attempt": (
+                                    attempt
+                                ),
+                            }
+                        )
+
+                    break
+
+                except Exception as exc:
+
+                    last_error = exc
+
+                    if (
+                        attempt
+                        >= settings
+                        .rabbitmq_publish_max_attempts
+                    ):
+
+                        if trace_span is not None:
+
+                            trace_span.update(
+                                level="ERROR",
+                                status_message=(
+                                    str(exc)
+                                ),
+                            )
+
+                        raise
+
+                    delay = (
+                        settings
+                        .rabbitmq_publish_retry_delay_seconds
+                        * attempt
+                    )
+
+                    self._logger().warning(
+                        "rabbitmq_publish_retry",
+                        event_id=(
+                            event.get(
+                                "event_id"
+                            )
+                        ),
+                        event_type=(
+                            event.get(
+                                "event_type"
+                            )
+                        ),
+                        routing_key=(
+                            routing_key
+                        ),
+                        attempt=attempt,
+                        next_attempt=(
+                            attempt + 1
+                        ),
+                        delay_seconds=(
+                            delay
+                        ),
+                        error=str(
                             exc
                         ),
                     )
 
-                raise
+                    await asyncio.sleep(
+                        delay
+                    )
 
-            if trace_span is not None:
+            if (
+                last_error is not None
+                and trace_span is not None
+            ):
 
                 trace_span.update(
-                    output={
-                        "published": True,
+                    metadata={
+                        "required_retry": (
+                            True
+                        )
                     }
                 )
 
@@ -282,6 +421,103 @@ class RabbitMQClient:
             ),
         )
 
+    async def _publish_dead_letter(
+        self,
+        *,
+        queue_name: str,
+        original_routing_key: str,
+        event: dict,
+        source_headers: (
+            dict
+            | None
+        ),
+        error: Exception,
+        delivery_attempt: int,
+    ) -> None:
+
+        if self.dead_letter_exchange is None:
+
+            raise RuntimeError(
+                (
+                    "RabbitMQ dead letter "
+                    "exchange is not connected."
+                )
+            )
+
+        traced_event = (
+            attach_current_trace(
+                event
+            )
+        )
+
+        body = json.dumps(
+            traced_event,
+            ensure_ascii=False,
+            default=str,
+        ).encode(
+            "utf-8"
+        )
+
+        headers = dict(
+            source_headers
+            or {}
+        )
+
+        headers[
+            DELIVERY_ATTEMPT_HEADER
+        ] = delivery_attempt
+
+        headers[
+            "x-original-routing-key"
+        ] = original_routing_key
+
+        headers[
+            "x-failed-queue"
+        ] = queue_name
+
+        headers[
+            "x-error"
+        ] = str(
+            error
+        )[:500]
+
+        message = Message(
+            body=body,
+            content_type=(
+                "application/json"
+            ),
+            delivery_mode=(
+                DeliveryMode.PERSISTENT
+            ),
+            message_id=(
+                traced_event.get(
+                    "event_id"
+                )
+            ),
+            correlation_id=(
+                traced_event.get(
+                    "correlation_id"
+                )
+            ),
+            type=(
+                traced_event.get(
+                    "event_type"
+                )
+            ),
+            headers=headers,
+        )
+
+        await (
+            self.dead_letter_exchange
+            .publish(
+                message,
+                routing_key=(
+                    queue_name
+                ),
+                mandatory=True,
+            )
+        )
+
     async def consume(
         self,
         *,
@@ -293,6 +529,8 @@ class RabbitMQClient:
         if (
             self.channel is None
             or self.exchange is None
+            or self.dead_letter_exchange
+            is None
         ):
 
             raise RuntimeError(
@@ -310,6 +548,26 @@ class RabbitMQClient:
             )
         )
 
+        dead_letter_queue_name = (
+            queue_name
+            + ".dlq"
+        )
+
+        dead_letter_queue = (
+            await self.channel
+            .declare_queue(
+                dead_letter_queue_name,
+                durable=True,
+            )
+        )
+
+        await dead_letter_queue.bind(
+            self.dead_letter_exchange,
+            routing_key=(
+                queue_name
+            ),
+        )
+
         for routing_key in routing_keys:
 
             await queue.bind(
@@ -323,15 +581,84 @@ class RabbitMQClient:
             message,
         ) -> None:
 
+            #
+            # If our retry/dead-letter publish
+            # itself fails, RabbitMQ will requeue
+            # the original delivery instead of
+            # losing it.
+            #
+
             async with message.process(
-                requeue=False
+                requeue=True
             ):
 
-                payload = json.loads(
-                    message.body.decode(
-                        "utf-8"
+                try:
+
+                    payload = json.loads(
+                        message.body.decode(
+                            "utf-8"
+                        )
                     )
-                )
+
+                except Exception as exc:
+
+                    invalid_event = {
+                        "event_id": (
+                            message.message_id
+                            or "invalid-message"
+                        ),
+                        "event_type": (
+                            message.type
+                            or "invalid"
+                        ),
+                        "correlation_id": (
+                            message.correlation_id
+                            or ""
+                        ),
+                        "data": {},
+                        "invalid_payload": (
+                            message.body.decode(
+                                "utf-8",
+                                errors="replace",
+                            )[:2000]
+                        ),
+                    }
+
+                    await (
+                        self
+                        ._publish_dead_letter(
+                            queue_name=(
+                                queue_name
+                            ),
+                            original_routing_key=str(
+                                message.routing_key
+                            ),
+                            event=(
+                                invalid_event
+                            ),
+                            source_headers=(
+                                message.headers
+                            ),
+                            error=exc,
+                            delivery_attempt=1,
+                        )
+                    )
+
+                    self._logger().error(
+                        (
+                            "rabbitmq_invalid_"
+                            "message_dead_lettered"
+                        ),
+                        queue=queue_name,
+                        dead_letter_queue=(
+                            dead_letter_queue_name
+                        ),
+                        error=str(
+                            exc
+                        ),
+                    )
+
+                    return
 
                 trace_context = (
                     trace_context_from_event(
@@ -344,6 +671,12 @@ class RabbitMQClient:
                         "event_type"
                     )
                     or "unknown"
+                )
+
+                delivery_attempt = (
+                    _get_delivery_attempt(
+                        message.headers
+                    )
                 )
 
                 with start_span(
@@ -365,6 +698,9 @@ class RabbitMQClient:
                         "event_type": (
                             event_type
                         ),
+                        "delivery_attempt": (
+                            delivery_attempt
+                        ),
                     },
                     metadata={
                         "service": (
@@ -377,6 +713,9 @@ class RabbitMQClient:
                             payload.get(
                                 "correlation_id"
                             )
+                        ),
+                        "delivery_attempt": (
+                            delivery_attempt
                         ),
                     },
                 ) as trace_span:
@@ -397,6 +736,9 @@ class RabbitMQClient:
                             )
                         ),
                         queue=queue_name,
+                        delivery_attempt=(
+                            delivery_attempt
+                        ),
                     )
 
                     try:
@@ -408,6 +750,148 @@ class RabbitMQClient:
                     except Exception as exc:
 
                         if (
+                            delivery_attempt
+                            < settings
+                            .rabbitmq_max_delivery_attempts
+                        ):
+
+                            next_attempt = (
+                                delivery_attempt
+                                + 1
+                            )
+
+                            delay = (
+                                settings
+                                .rabbitmq_retry_delay_seconds
+                                * delivery_attempt
+                            )
+
+                            self._logger().warning(
+                                (
+                                    "rabbitmq_event_"
+                                    "retry_scheduled"
+                                ),
+                                event_id=(
+                                    payload.get(
+                                        "event_id"
+                                    )
+                                ),
+                                event_type=(
+                                    event_type
+                                ),
+                                queue=queue_name,
+                                current_attempt=(
+                                    delivery_attempt
+                                ),
+                                next_attempt=(
+                                    next_attempt
+                                ),
+                                delay_seconds=(
+                                    delay
+                                ),
+                                error=str(
+                                    exc
+                                ),
+                            )
+
+                            if (
+                                trace_span
+                                is not None
+                            ):
+
+                                trace_span.update(
+                                    level="WARNING",
+                                    status_message=(
+                                        str(exc)
+                                    ),
+                                    output={
+                                        (
+                                            "retry_"
+                                            "scheduled"
+                                        ): True,
+                                        "next_attempt": (
+                                            next_attempt
+                                        ),
+                                    },
+                                )
+
+                            await asyncio.sleep(
+                                delay
+                            )
+
+                            retry_headers = dict(
+                                message.headers
+                                or {}
+                            )
+
+                            retry_headers[
+                                DELIVERY_ATTEMPT_HEADER
+                            ] = next_attempt
+
+                            retry_headers[
+                                "x-last-error"
+                            ] = str(
+                                exc
+                            )[:500]
+
+                            await self.publish(
+                                routing_key=str(
+                                    message.routing_key
+                                ),
+                                event=payload,
+                                headers=(
+                                    retry_headers
+                                ),
+                            )
+
+                            return
+
+                        await (
+                            self
+                            ._publish_dead_letter(
+                                queue_name=(
+                                    queue_name
+                                ),
+                                original_routing_key=str(
+                                    message.routing_key
+                                ),
+                                event=payload,
+                                source_headers=(
+                                    message.headers
+                                ),
+                                error=exc,
+                                delivery_attempt=(
+                                    delivery_attempt
+                                ),
+                            )
+                        )
+
+                        self._logger().error(
+                            (
+                                "rabbitmq_event_"
+                                "dead_lettered"
+                            ),
+                            event_id=(
+                                payload.get(
+                                    "event_id"
+                                )
+                            ),
+                            event_type=(
+                                event_type
+                            ),
+                            queue=queue_name,
+                            dead_letter_queue=(
+                                dead_letter_queue_name
+                            ),
+                            delivery_attempt=(
+                                delivery_attempt
+                            ),
+                            error=str(
+                                exc
+                            ),
+                        )
+
+                        if (
                             trace_span
                             is not None
                         ):
@@ -417,17 +901,26 @@ class RabbitMQClient:
                                 status_message=(
                                     str(exc)
                                 ),
+                                output={
+                                    "dead_lettered": (
+                                        True
+                                    ),
+                                    "dead_letter_queue": (
+                                        dead_letter_queue_name
+                                    ),
+                                },
                             )
 
-                        raise
+                        return
 
                     if trace_span is not None:
 
                         trace_span.update(
                             output={
-                                "processed": (
-                                    True
-                                )
+                                "processed": True,
+                                "delivery_attempt": (
+                                    delivery_attempt
+                                ),
                             }
                         )
 
@@ -438,6 +931,9 @@ class RabbitMQClient:
         self._logger().info(
             "rabbitmq_consumer_started",
             queue=queue_name,
+            dead_letter_queue=(
+                dead_letter_queue_name
+            ),
             routing_keys=(
                 routing_keys
             ),
@@ -453,6 +949,8 @@ class RabbitMQClient:
             or self.channel is None
             or self.channel.is_closed
             or self.exchange is None
+            or self.dead_letter_exchange
+            is None
         ):
 
             raise RuntimeError(
@@ -475,6 +973,10 @@ class RabbitMQClient:
                     settings
                     .rabbitmq_exchange
                 ),
+                "dead_letter_exchange": (
+                    settings
+                    .rabbitmq_dead_letter_exchange
+                ),
             }
         }
 
@@ -495,6 +997,7 @@ class RabbitMQClient:
         self.connection = None
         self.channel = None
         self.exchange = None
+        self.dead_letter_exchange = None
 
         self._logger().info(
             "rabbitmq_disconnected"

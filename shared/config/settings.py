@@ -131,6 +131,18 @@ class Settings(BaseSettings):
         "gamehub.events"
     )
 
+    rabbitmq_dead_letter_exchange: str = (
+        "gamehub.events.dead-letter"
+    )
+
+    rabbitmq_max_delivery_attempts: int = 3
+
+    rabbitmq_retry_delay_seconds: float = 1.0
+
+    rabbitmq_publish_max_attempts: int = 3
+
+    rabbitmq_publish_retry_delay_seconds: float = 0.5
+
     rabbitmq_management_url: str = (
         "http://localhost:15672"
     )
