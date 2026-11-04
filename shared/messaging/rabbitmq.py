@@ -21,6 +21,12 @@ from shared.logging.setup import (
     get_logger,
 )
 
+from shared.tracing.observability import (
+    attach_current_trace,
+    start_span,
+    trace_context_from_event,
+)
+
 
 MessageHandler = Callable[
     [dict],
@@ -35,6 +41,7 @@ class RabbitMQClient:
         *,
         service_name: str,
     ) -> None:
+
         self.service_name = (
             service_name
         )
@@ -46,6 +53,7 @@ class RabbitMQClient:
     def _logger(
         self,
     ):
+
         return get_logger(
             self.service_name
         )
@@ -53,15 +61,14 @@ class RabbitMQClient:
     async def connect(
         self,
     ) -> None:
-        """
-        Establish a robust RabbitMQ
-        connection and declare the shared
-        GameHub topic exchange.
-        """
 
         if (
-            self.connection is not None
-            and not self.connection.is_closed
+            self.connection
+            is not None
+            and not (
+                self.connection
+                .is_closed
+            )
         ):
             return
 
@@ -133,16 +140,13 @@ class RabbitMQClient:
         routing_key: str,
         event: dict,
     ) -> None:
-        """
-        Publish a persistent event through
-        the shared GameHub topic exchange.
-        """
 
         if (
             self.exchange is None
             or self.channel is None
             or self.channel.is_closed
         ):
+
             raise RuntimeError(
                 (
                     "RabbitMQ publisher "
@@ -150,44 +154,111 @@ class RabbitMQClient:
                 )
             )
 
-        body = json.dumps(
-            event,
-            ensure_ascii=False,
-            default=str,
-        ).encode(
-            "utf-8"
-        )
+        with start_span(
+            name=(
+                "RabbitMQ publish "
+                + routing_key
+            ),
+            input_data={
+                "event_id": (
+                    event.get(
+                        "event_id"
+                    )
+                ),
+                "event_type": (
+                    event.get(
+                        "event_type"
+                    )
+                ),
+            },
+            metadata={
+                "service": (
+                    self.service_name
+                ),
+                "exchange": (
+                    settings
+                    .rabbitmq_exchange
+                ),
+                "routing_key": (
+                    routing_key
+                ),
+                "correlation_id": (
+                    event.get(
+                        "correlation_id"
+                    )
+                ),
+            },
+        ) as trace_span:
 
-        message = Message(
-            body=body,
-            content_type=(
-                "application/json"
-            ),
-            delivery_mode=(
-                DeliveryMode.PERSISTENT
-            ),
-            message_id=(
-                event.get(
-                    "event_id"
+            traced_event = (
+                attach_current_trace(
+                    event
                 )
-            ),
-            correlation_id=(
-                event.get(
-                    "correlation_id"
-                )
-            ),
-            type=(
-                event.get(
-                    "event_type"
-                )
-            ),
-        )
+            )
 
-        await self.exchange.publish(
-            message,
-            routing_key=routing_key,
-            mandatory=True,
-        )
+            body = json.dumps(
+                traced_event,
+                ensure_ascii=False,
+                default=str,
+            ).encode(
+                "utf-8"
+            )
+
+            message = Message(
+                body=body,
+                content_type=(
+                    "application/json"
+                ),
+                delivery_mode=(
+                    DeliveryMode.PERSISTENT
+                ),
+                message_id=(
+                    traced_event.get(
+                        "event_id"
+                    )
+                ),
+                correlation_id=(
+                    traced_event.get(
+                        "correlation_id"
+                    )
+                ),
+                type=(
+                    traced_event.get(
+                        "event_type"
+                    )
+                ),
+            )
+
+            try:
+
+                await self.exchange.publish(
+                    message,
+                    routing_key=(
+                        routing_key
+                    ),
+                    mandatory=True,
+                )
+
+            except Exception as exc:
+
+                if trace_span is not None:
+
+                    trace_span.update(
+                        level="ERROR",
+                        status_message=str(
+                            exc
+                        ),
+                    )
+
+                raise
+
+            if trace_span is not None:
+
+                trace_span.update(
+                    output={
+                        "published": True,
+                    }
+                )
 
         self._logger().info(
             "rabbitmq_event_published",
@@ -218,15 +289,12 @@ class RabbitMQClient:
         routing_keys: list[str],
         handler: MessageHandler,
     ) -> None:
-        """
-        Declare a durable queue, bind it
-        to routing keys and start consuming.
-        """
 
         if (
             self.channel is None
             or self.exchange is None
         ):
+
             raise RuntimeError(
                 (
                     "RabbitMQ consumer "
@@ -243,6 +311,7 @@ class RabbitMQClient:
         )
 
         for routing_key in routing_keys:
+
             await queue.bind(
                 self.exchange,
                 routing_key=(
@@ -253,38 +322,114 @@ class RabbitMQClient:
         async def on_message(
             message,
         ) -> None:
+
             async with message.process(
                 requeue=False
             ):
+
                 payload = json.loads(
                     message.body.decode(
                         "utf-8"
                     )
                 )
 
-                self._logger().info(
-                    "rabbitmq_event_received",
-                    event_id=(
-                        payload.get(
-                            "event_id"
-                        )
-                    ),
-                    event_type=(
-                        payload.get(
-                            "event_type"
-                        )
-                    ),
-                    correlation_id=(
-                        payload.get(
-                            "correlation_id"
-                        )
-                    ),
-                    queue=queue_name,
+                trace_context = (
+                    trace_context_from_event(
+                        payload
+                    )
                 )
 
-                await handler(
-                    payload
+                event_type = (
+                    payload.get(
+                        "event_type"
+                    )
+                    or "unknown"
                 )
+
+                with start_span(
+                    name=(
+                        "RabbitMQ consume "
+                        + str(
+                            event_type
+                        )
+                    ),
+                    trace_context=(
+                        trace_context
+                    ),
+                    input_data={
+                        "event_id": (
+                            payload.get(
+                                "event_id"
+                            )
+                        ),
+                        "event_type": (
+                            event_type
+                        ),
+                    },
+                    metadata={
+                        "service": (
+                            self.service_name
+                        ),
+                        "queue": (
+                            queue_name
+                        ),
+                        "correlation_id": (
+                            payload.get(
+                                "correlation_id"
+                            )
+                        ),
+                    },
+                ) as trace_span:
+
+                    self._logger().info(
+                        "rabbitmq_event_received",
+                        event_id=(
+                            payload.get(
+                                "event_id"
+                            )
+                        ),
+                        event_type=(
+                            event_type
+                        ),
+                        correlation_id=(
+                            payload.get(
+                                "correlation_id"
+                            )
+                        ),
+                        queue=queue_name,
+                    )
+
+                    try:
+
+                        await handler(
+                            payload
+                        )
+
+                    except Exception as exc:
+
+                        if (
+                            trace_span
+                            is not None
+                        ):
+
+                            trace_span.update(
+                                level="ERROR",
+                                status_message=(
+                                    str(exc)
+                                ),
+                            )
+
+                        raise
+
+                    if trace_span is not None:
+
+                        trace_span.update(
+                            output={
+                                "processed": (
+                                    True
+                                )
+                            }
+                        )
 
         await queue.consume(
             on_message
@@ -301,10 +446,6 @@ class RabbitMQClient:
     async def readiness_check(
         self,
     ) -> dict:
-        """
-        Verify that this service currently
-        has a working RabbitMQ connection.
-        """
 
         if (
             self.connection is None
@@ -313,6 +454,7 @@ class RabbitMQClient:
             or self.channel.is_closed
             or self.exchange is None
         ):
+
             raise RuntimeError(
                 (
                     "RabbitMQ connection "
@@ -339,14 +481,15 @@ class RabbitMQClient:
     async def close(
         self,
     ) -> None:
-        """
-        Close the RabbitMQ connection.
-        """
 
         if (
             self.connection is not None
-            and not self.connection.is_closed
+            and not (
+                self.connection
+                .is_closed
+            )
         ):
+
             await self.connection.close()
 
         self.connection = None

@@ -15,9 +15,18 @@ from gateway.app.routing import (
     ServiceTarget,
 )
 
-from shared.config.settings import settings
+from shared.config.settings import (
+    settings,
+)
 
-from shared.logging.setup import get_logger
+from shared.logging.setup import (
+    get_logger,
+)
+
+from shared.tracing.observability import (
+    current_trace_headers,
+    start_span,
+)
 
 
 SERVICE_NAME = "api-gateway"
@@ -95,6 +104,7 @@ class GatewayProxy:
     ) -> None:
 
         if self.client is not None:
+
             await self.client.aclose()
 
         self.client = None
@@ -119,11 +129,6 @@ class GatewayProxy:
             )
         }
 
-        #
-        # Gateway becomes the authority
-        # for distributed request context.
-        #
-
         headers[
             settings.request_id_header
         ] = request.state.request_id
@@ -136,11 +141,9 @@ class GatewayProxy:
 
         headers[
             "X-Forwarded-Host"
-        ] = (
-            request.headers.get(
-                "host",
-                ""
-            )
+        ] = request.headers.get(
+            "host",
+            "",
         )
 
         headers[
@@ -173,6 +176,7 @@ class GatewayProxy:
     ) -> Response:
 
         if self.client is None:
+
             raise RuntimeError(
                 (
                     "Gateway HTTP client "
@@ -196,75 +200,154 @@ class GatewayProxy:
             target_url=target_url,
         )
 
-        try:
+        with start_span(
+            name=(
+                f"HTTP {request.method} "
+                f"{target.name}"
+            ),
+            input_data={
+                "path": (
+                    "/api/"
+                    + path
+                ),
+            },
+            metadata={
+                "source_service": (
+                    SERVICE_NAME
+                ),
+                "target_service": (
+                    target.name
+                ),
+                "correlation_id": (
+                    request.state
+                    .correlation_id
+                ),
+            },
+        ) as trace_span:
 
-            upstream = (
-                await self.client.request(
-                    method=request.method,
-                    url=target_url,
-                    params=(
-                        request.query_params
-                    ),
-                    headers=(
-                        self._forward_headers(
-                            request=request
-                        )
-                    ),
-                    content=(
-                        body
-                        if body
-                        else None
-                    ),
+            headers = (
+                self._forward_headers(
+                    request=request
                 )
             )
 
-        except httpx.TimeoutException:
+            #
+            # Current outbound HTTP span becomes
+            # parent of the downstream request.
+            #
 
-            self._logger().warning(
-                "gateway_upstream_timeout",
-                target_service=(
-                    target.name
-                ),
-                target_url=target_url,
+            headers.update(
+                current_trace_headers()
             )
 
-            raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_504_GATEWAY_TIMEOUT
-                ),
-                detail={
-                    "message": (
-                        "Upstream service "
-                        "timed out."
+            try:
+
+                upstream = (
+                    await self.client.request(
+                        method=(
+                            request.method
+                        ),
+                        url=target_url,
+                        params=(
+                            request
+                            .query_params
+                        ),
+                        headers=headers,
+                        content=(
+                            body
+                            if body
+                            else None
+                        ),
+                    )
+                )
+
+            except httpx.TimeoutException:
+
+                if trace_span is not None:
+
+                    trace_span.update(
+                        level="ERROR",
+                        status_message=(
+                            "Upstream timeout"
+                        ),
+                    )
+
+                self._logger().warning(
+                    "gateway_upstream_timeout",
+                    target_service=(
+                        target.name
                     ),
-                    "service": target.name,
-                },
-            )
-
-        except httpx.RequestError:
-
-            self._logger().exception(
-                "gateway_upstream_unavailable",
-                target_service=(
-                    target.name
-                ),
-                target_url=target_url,
-            )
-
-            raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_503_SERVICE_UNAVAILABLE
-                ),
-                detail={
-                    "message": (
-                        "Upstream service "
-                        "is unavailable."
+                    target_url=(
+                        target_url
                     ),
-                    "service": target.name,
-                },
-            )
+                )
+
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_504_GATEWAY_TIMEOUT
+                    ),
+                    detail={
+                        "message": (
+                            "Upstream service "
+                            "timed out."
+                        ),
+                        "service": (
+                            target.name
+                        ),
+                    },
+                )
+
+            except httpx.RequestError:
+
+                if trace_span is not None:
+
+                    trace_span.update(
+                        level="ERROR",
+                        status_message=(
+                            (
+                                "Upstream service "
+                                "unavailable"
+                            )
+                        ),
+                    )
+
+                self._logger().exception(
+                    "gateway_upstream_unavailable",
+                    target_service=(
+                        target.name
+                    ),
+                    target_url=(
+                        target_url
+                    ),
+                )
+
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_503_SERVICE_UNAVAILABLE
+                    ),
+                    detail={
+                        "message": (
+                            "Upstream service "
+                            "is unavailable."
+                        ),
+                        "service": (
+                            target.name
+                        ),
+                    },
+                )
+
+            if trace_span is not None:
+
+                trace_span.update(
+                    output={
+                        "status_code": (
+                            upstream
+                            .status_code
+                        )
+                    }
+                )
 
         self._logger().info(
             "gateway_proxy_completed",
@@ -277,7 +360,9 @@ class GatewayProxy:
         )
 
         return Response(
-            content=upstream.content,
+            content=(
+                upstream.content
+            ),
             status_code=(
                 upstream.status_code
             ),
@@ -293,6 +378,7 @@ class GatewayProxy:
     ) -> dict:
 
         if self.client is None:
+
             raise RuntimeError(
                 (
                     "Gateway HTTP client "
@@ -321,14 +407,18 @@ class GatewayProxy:
                     )
                 )
 
-                if response.status_code == 200:
+                if (
+                    response.status_code
+                    == 200
+                ):
 
                     return (
                         target.name,
                         {
                             "status": "ok",
                             "url": (
-                                target.base_url
+                                target
+                                .base_url
                             ),
                         },
                     )

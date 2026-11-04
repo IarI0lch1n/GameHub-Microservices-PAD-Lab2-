@@ -4,13 +4,9 @@ from contextlib import (
 
 import inspect
 
-from collections.abc import (
-    Callable,
-)
+from collections.abc import Callable
 
-from fastapi import (
-    FastAPI,
-)
+from fastapi import FastAPI
 
 from fastapi.responses import (
     JSONResponse,
@@ -27,6 +23,11 @@ from shared.logging.middleware import (
 from shared.logging.setup import (
     configure_logging,
     get_logger,
+)
+
+from shared.tracing.observability import (
+    initialize_tracing,
+    shutdown_tracing,
 )
 
 
@@ -68,17 +69,6 @@ def create_service_app(
         | None
     ) = None,
 ) -> FastAPI:
-    """
-    Create a standard GameHub FastAPI service.
-
-    Every service receives:
-    - structured logging;
-    - request/correlation IDs;
-    - Swagger/OpenAPI;
-    - /health;
-    - /ready;
-    - lifespan handling.
-    """
 
     configure_logging(
         service_name
@@ -92,12 +82,25 @@ def create_service_app(
     async def lifespan(
         app: FastAPI,
     ):
+
         logger.info(
             "service_starting",
             environment=(
                 settings.app_env
             ),
             version=version,
+        )
+
+        tracing_active = (
+            initialize_tracing()
+        )
+
+        logger.info(
+            "tracing_configuration",
+            provider="langfuse",
+            enabled=(
+                tracing_active
+            ),
         )
 
         await _run_callback(
@@ -113,9 +116,11 @@ def create_service_app(
         )
 
         try:
+
             yield
 
         finally:
+
             logger.info(
                 "service_stopping"
             )
@@ -123,6 +128,8 @@ def create_service_app(
             await _run_callback(
                 shutdown_handler
             )
+
+            shutdown_tracing()
 
             logger.info(
                 "service_stopped"

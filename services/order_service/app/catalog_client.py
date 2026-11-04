@@ -4,9 +4,18 @@ import httpx
 
 from pydantic import BaseModel
 
-from shared.config.settings import settings
+from shared.config.settings import (
+    settings,
+)
 
-from shared.logging.setup import get_logger
+from shared.logging.setup import (
+    get_logger,
+)
+
+from shared.tracing.observability import (
+    current_trace_headers,
+    start_span,
+)
 
 
 SERVICE_NAME = "order-service"
@@ -47,6 +56,7 @@ class CatalogClient:
     def _logger(
         self,
     ):
+
         return get_logger(
             SERVICE_NAME
         )
@@ -58,18 +68,16 @@ class CatalogClient:
         if self.client is not None:
             return
 
-        self.client = (
-            httpx.AsyncClient(
-                base_url=(
-                    settings
-                    .catalog_service_url
-                    .rstrip("/")
-                ),
-                timeout=(
-                    settings
-                    .http_timeout_seconds
-                ),
-            )
+        self.client = httpx.AsyncClient(
+            base_url=(
+                settings
+                .catalog_service_url
+                .rstrip("/")
+            ),
+            timeout=(
+                settings
+                .http_timeout_seconds
+            ),
         )
 
         self._logger().info(
@@ -104,6 +112,7 @@ class CatalogClient:
     ) -> CatalogGame:
 
         if self.client is None:
+
             raise RuntimeError(
                 (
                     "Catalog HTTP client "
@@ -111,40 +120,102 @@ class CatalogClient:
                 )
             )
 
-        try:
-            response = await self.client.get(
-                f"/internal/games/{game_id}",
-                headers=self._headers(
-                    request_id=request_id,
-                    correlation_id=(
-                        correlation_id
-                    ),
+        with start_span(
+            name=(
+                "HTTP GET catalog-service"
+            ),
+            input_data={
+                "game_id": game_id,
+            },
+            metadata={
+                "source_service": (
+                    SERVICE_NAME
+                ),
+                "target_service": (
+                    "catalog-service"
+                ),
+                "correlation_id": (
+                    correlation_id
+                ),
+            },
+        ) as trace_span:
+
+            headers = self._headers(
+                request_id=request_id,
+                correlation_id=(
+                    correlation_id
                 ),
             )
 
-        except httpx.RequestError as exc:
-            raise CatalogUnavailableError(
-                (
-                    "Catalog Service "
-                    "is unavailable."
+            headers.update(
+                current_trace_headers()
+            )
+
+            try:
+
+                response = (
+                    await self.client.get(
+                        (
+                            f"/internal/games/"
+                            f"{game_id}"
+                        ),
+                        headers=headers,
+                    )
                 )
-            ) from exc
+
+            except httpx.RequestError as exc:
+
+                if trace_span is not None:
+
+                    trace_span.update(
+                        level="ERROR",
+                        status_message=(
+                            "Catalog unavailable"
+                        ),
+                    )
+
+                raise (
+                    CatalogUnavailableError(
+                        (
+                            "Catalog Service "
+                            "is unavailable."
+                        )
+                    )
+                ) from exc
+
+            if trace_span is not None:
+
+                trace_span.update(
+                    output={
+                        "status_code": (
+                            response
+                            .status_code
+                        )
+                    }
+                )
 
         if response.status_code == 404:
-            raise CatalogGameNotFoundError(
-                "Game not found."
+
+            raise (
+                CatalogGameNotFoundError(
+                    "Game not found."
+                )
             )
 
         if response.status_code != 200:
+
             raise CatalogUnavailableError(
                 (
                     "Catalog Service returned "
-                    f"HTTP {response.status_code}."
+                    f"HTTP "
+                    f"{response.status_code}."
                 )
             )
 
-        game = CatalogGame.model_validate(
-            response.json()
+        game = (
+            CatalogGame.model_validate(
+                response.json()
+            )
         )
 
         self._logger().info(
@@ -163,6 +234,7 @@ class CatalogClient:
     ) -> dict:
 
         if self.client is None:
+
             raise RuntimeError(
                 (
                     "Catalog HTTP client "
@@ -171,11 +243,15 @@ class CatalogClient:
             )
 
         try:
-            response = await self.client.get(
-                "/ready"
+
+            response = (
+                await self.client.get(
+                    "/ready"
+                )
             )
 
         except httpx.RequestError as exc:
+
             raise RuntimeError(
                 (
                     "Catalog Service "
@@ -184,6 +260,7 @@ class CatalogClient:
             ) from exc
 
         if response.status_code != 200:
+
             raise RuntimeError(
                 (
                     "Catalog Service "
@@ -206,6 +283,7 @@ class CatalogClient:
     ) -> None:
 
         if self.client is not None:
+
             await self.client.aclose()
 
         self.client = None
