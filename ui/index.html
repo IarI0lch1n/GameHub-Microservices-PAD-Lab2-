@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>GameHub</title>
+
+    <link
+        rel="stylesheet"
+        href="/ui/styles.css"
+    >
+</head>
+
+<body>
+
+<div id="app">
+
+    <header class="topbar">
+
+        <div class="brand" data-nav="store">
+            <div class="brand-mark">G</div>
+
+            <div>
+                <div class="brand-title">
+                    GameHub
+                </div>
+
+                <div class="brand-subtitle">
+                    Microservice Platform
+                </div>
+            </div>
+        </div>
+
+        <nav id="mainNav" class="main-nav">
+
+            <button
+                class="nav-button active"
+                data-page="store"
+            >
+                Store
+            </button>
+
+            <button
+                class="nav-button auth-only"
+                data-page="library"
+            >
+                Library
+            </button>
+
+            <button
+                class="nav-button auth-only"
+                data-page="orders"
+            >
+                Orders
+            </button>
+
+            <button
+                class="nav-button auth-only"
+                data-page="notifications"
+            >
+                Notifications
+
+                <span
+                    id="notificationBadge"
+                    class="notification-badge hidden"
+                >
+                    0
+                </span>
+            </button>
+
+            <button
+                class="nav-button"
+                data-page="system"
+            >
+                System
+            </button>
+
+            <button
+                id="adminNav"
+                class="nav-button hidden"
+                data-page="admin"
+            >
+                Admin
+            </button>
+
+        </nav>
+
+        <div class="account-area">
+
+            <div
+                id="guestActions"
+                class="guest-actions"
+            >
+                <button
+                    id="loginButton"
+                    class="button button-secondary"
+                >
+                    Sign in
+                </button>
+
+                <button
+                    id="registerButton"
+                    class="button button-primary"
+                >
+                    Create account
+                </button>
+            </div>
+
+            <div
+                id="userActions"
+                class="user-actions hidden"
+            >
+                <div class="user-meta">
+                    <strong id="userEmail">
+                        user@example.com
+                    </strong>
+
+                    <span id="userRole">
+                        user
+                    </span>
+                </div>
+
+                <button
+                    id="logoutButton"
+                    class="button button-secondary"
+                >
+                    Sign out
+                </button>
+            </div>
+
+        </div>
+
+    </header>
+
+
+    <main>
+
+        <section
+            id="page-store"
+            class="page active"
+        >
+
+            <div class="hero">
+
+                <div class="hero-content">
+
+                    <div class="eyebrow">
+                        GAMEHUB STORE
+                    </div>
+
+                    <h1>
+                        Discover your next game.
+                    </h1>
+
+                    <p>
+                        Browse the catalog, purchase games
+                        and follow the complete request
+                        across the GameHub microservices.
+                    </p>
+
+                    <div class="hero-actions">
+                        <button
+                            id="heroLibraryButton"
+                            class="button button-primary"
+                        >
+                            My library
+                        </button>
+
+                        <a
+                            class="button button-secondary"
+                            href="/docs"
+                            target="_blank"
+                        >
+                            API docs
+                        </a>
+                    </div>
+
+                </div>
+
+                <div class="hero-status">
+
+                    <span class="status-dot"></span>
+
+                    <div>
+                        <strong id="heroStatusText">
+                            Checking services...
+                        </strong>
+
+                        <small>
+                            API Gateway :8000
+                        </small>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="section-heading">
+
+                <div>
+                    <div class="eyebrow">
+                        CATALOG
+                    </div>
+
+                    <h2>
+                        Available games
+                    </h2>
+                </div>
+
+                <button
+                    id="refreshGamesButton"
+                    class="button button-secondary"
+                >
+                    Refresh
+                </button>
+
+            </div>
+
+
+            <div class="catalog-controls">
+
+                <input
+                    id="gameSearch"
+                    class="input"
+                    type="search"
+                    placeholder="Search games..."
+                >
+
+                <select
+                    id="genreFilter"
+                    class="input"
+                >
+                    <option value="">
+                        All genres
+                    </option>
+                </select>
+
+            </div>
+
+
+            <div
+                id="gamesGrid"
+                class="game-grid"
+            ></div>
+
+        </section>
+
+
+        <section
+            id="page-library"
+            class="page"
+        >
+            <div class="section-heading">
+                <div>
+                    <div class="eyebrow">
+                        MY COLLECTION
+                    </div>
+
+                    <h2>
+                        Library
+                    </h2>
+                </div>
+            </div>
+
+            <div
+                id="libraryGrid"
+                class="game-grid"
+            ></div>
+        </section>
+
+
+        <section
+            id="page-orders"
+            class="page"
+        >
+            <div class="section-heading">
+
+                <div>
+                    <div class="eyebrow">
+                        PURCHASE HISTORY
+                    </div>
+
+                    <h2>
+                        Orders
+                    </h2>
+                </div>
+
+            </div>
+
+            <div
+                id="ordersContent"
+                class="panel"
+            ></div>
+        </section>
+
+
+        <section
+            id="page-notifications"
+            class="page"
+        >
+            <div class="section-heading">
+
+                <div>
+                    <div class="eyebrow">
+                        ACTIVITY
+                    </div>
+
+                    <h2>
+                        Notifications
+                    </h2>
+                </div>
+
+                <button
+                    id="refreshNotificationsButton"
+                    class="button button-secondary"
+                >
+                    Refresh
+                </button>
+
+            </div>
+
+            <div
+                id="notificationsList"
+                class="notification-list"
+            ></div>
+        </section>
+
+
+        <section
+            id="page-system"
+            class="page"
+        >
+
+            <div class="section-heading">
+
+                <div>
+                    <div class="eyebrow">
+                        OBSERVABILITY
+                    </div>
+
+                    <h2>
+                        System status
+                    </h2>
+                </div>
+
+                <button
+                    id="refreshServicesButton"
+                    class="button button-secondary"
+                >
+                    Refresh
+                </button>
+
+            </div>
+
+            <div
+                id="servicesGrid"
+                class="service-grid"
+            ></div>
+
+
+            <div class="panel system-links">
+
+                <h3>
+                    Infrastructure
+                </h3>
+
+                <div class="link-grid">
+
+                    <a
+                        href="/docs"
+                        target="_blank"
+                        class="system-link"
+                    >
+                        <strong>Swagger</strong>
+                        <span>/docs</span>
+                    </a>
+
+                    <a
+                        href="/services/status"
+                        target="_blank"
+                        class="system-link"
+                    >
+                        <strong>Service status</strong>
+                        <span>/services/status</span>
+                    </a>
+
+                    <a
+                        href="http://localhost:15672"
+                        target="_blank"
+                        class="system-link"
+                    >
+                        <strong>RabbitMQ</strong>
+                        <span>:15672</span>
+                    </a>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <section
+            id="page-admin"
+            class="page"
+        >
+
+            <div class="section-heading">
+                <div>
+                    <div class="eyebrow">
+                        ADMINISTRATION
+                    </div>
+
+                    <h2>
+                        Catalog management
+                    </h2>
+                </div>
+            </div>
+
+
+            <div class="admin-grid">
+
+                <form
+                    id="genreForm"
+                    class="panel form-panel"
+                >
+
+                    <h3>
+                        Add genre
+                    </h3>
+
+                    <label>
+                        Genre name
+
+                        <input
+                            id="genreName"
+                            class="input"
+                            required
+                            minlength="2"
+                            maxlength="100"
+                            placeholder="Strategy"
+                        >
+                    </label>
+
+                    <button
+                        class="button button-primary"
+                        type="submit"
+                    >
+                        Create genre
+                    </button>
+
+                </form>
+
+
+                <form
+                    id="gameForm"
+                    class="panel form-panel"
+                >
+
+                    <h3>
+                        Add game
+                    </h3>
+
+                    <div class="form-grid">
+
+                        <label>
+                            Title
+
+                            <input
+                                id="gameTitle"
+                                class="input"
+                                required
+                                placeholder="Game title"
+                            >
+                        </label>
+
+                        <label>
+                            Price
+
+                            <input
+                                id="gamePrice"
+                                class="input"
+                                required
+                                min="0"
+                                step="0.01"
+                                type="number"
+                                placeholder="29.99"
+                            >
+                        </label>
+
+                        <label>
+                            Developer
+
+                            <input
+                                id="gameDeveloper"
+                                class="input"
+                                placeholder="Developer"
+                            >
+                        </label>
+
+                        <label>
+                            Publisher
+
+                            <input
+                                id="gamePublisher"
+                                class="input"
+                                placeholder="Publisher"
+                            >
+                        </label>
+
+                        <label>
+                            Release date
+
+                            <input
+                                id="gameReleaseDate"
+                                class="input"
+                                type="date"
+                            >
+                        </label>
+
+                        <label class="checkbox-label">
+                            <input
+                                id="gamePublished"
+                                type="checkbox"
+                                checked
+                            >
+
+                            Published
+                        </label>
+
+                    </div>
+
+                    <label>
+                        Description
+
+                        <textarea
+                            id="gameDescription"
+                            class="input textarea"
+                            placeholder="Game description..."
+                        ></textarea>
+                    </label>
+
+                    <label>
+                        Genres
+
+                        <select
+                            id="gameGenres"
+                            class="input multi-select"
+                            multiple
+                        ></select>
+                    </label>
+
+                    <button
+                        class="button button-primary"
+                        type="submit"
+                    >
+                        Create game
+                    </button>
+
+                </form>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <dialog
+        id="authDialog"
+        class="modal"
+    >
+
+        <div class="modal-header">
+
+            <div>
+                <div class="eyebrow">
+                    GAMEHUB ACCOUNT
+                </div>
+
+                <h2 id="authTitle">
+                    Sign in
+                </h2>
+            </div>
+
+            <button
+                id="closeAuthButton"
+                class="icon-button"
+                type="button"
+            >
+                ×
+            </button>
+
+        </div>
+
+
+        <form id="authForm">
+
+            <label>
+                Email
+
+                <input
+                    id="authEmail"
+                    class="input"
+                    type="email"
+                    required
+                    autocomplete="email"
+                    placeholder="player@example.com"
+                >
+            </label>
+
+            <label>
+                Password
+
+                <input
+                    id="authPassword"
+                    class="input"
+                    type="password"
+                    required
+                    minlength="8"
+                    autocomplete="current-password"
+                    placeholder="••••••••"
+                >
+            </label>
+
+            <button
+                id="authSubmitButton"
+                class="button button-primary full-width"
+                type="submit"
+            >
+                Sign in
+            </button>
+
+        </form>
+
+
+        <button
+            id="authModeToggle"
+            class="text-button"
+            type="button"
+        >
+            Need an account? Create one.
+        </button>
+
+    </dialog>
+
+
+    <dialog
+        id="reviewsDialog"
+        class="modal modal-large"
+    >
+        <div class="modal-header">
+
+            <div>
+                <div class="eyebrow">
+                    COMMUNITY
+                </div>
+
+                <h2 id="reviewsTitle">
+                    Reviews
+                </h2>
+            </div>
+
+            <button
+                id="closeReviewsButton"
+                class="icon-button"
+                type="button"
+            >
+                ×
+            </button>
+
+        </div>
+
+        <div id="reviewsContent"></div>
+
+    </dialog>
+
+
+    <div
+        id="toastContainer"
+        class="toast-container"
+    ></div>
+
+</div>
+
+<script
+    src="/ui/app.js"
+    defer
+></script>
+
+</body>
+</html>

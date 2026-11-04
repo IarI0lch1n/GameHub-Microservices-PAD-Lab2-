@@ -1,7 +1,13 @@
+from pathlib import Path
+
 from fastapi import (
     HTTPException,
     Request,
     status,
+)
+
+from fastapi.staticfiles import (
+    StaticFiles,
 )
 
 from gateway.app.proxy import (
@@ -19,6 +25,14 @@ from shared.web.service_factory import (
 
 
 SERVICE_NAME = "api-gateway"
+
+
+UI_DIRECTORY = (
+    Path(__file__)
+    .resolve()
+    .parents[2]
+    / "ui"
+)
 
 
 async def initialize_gateway(
@@ -49,7 +63,7 @@ app = create_service_app(
         "Single public entry point for "
         "the GameHub microservice system."
     ),
-    version="0.1.0",
+    version="0.2.0",
     startup_handler=(
         initialize_gateway
     ),
@@ -76,7 +90,8 @@ async def root():
         "message": (
             "GameHub API Gateway"
         ),
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "ui": "/ui/",
         "docs": "/docs",
         "health": "/health",
         "ready": "/ready",
@@ -179,3 +194,15 @@ async def proxy_api(
         target=target,
         path=path,
     )
+
+
+app.mount(
+    "/ui",
+    StaticFiles(
+        directory=str(
+            UI_DIRECTORY
+        ),
+        html=True,
+    ),
+    name="ui",
+)
